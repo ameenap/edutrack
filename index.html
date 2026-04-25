@@ -6074,7 +6074,7 @@ function renderBatchView() {
   // Sort slots by start time
   globalSlots.sort((a,b) => a.startTime.localeCompare(b.startTime));
 
-  const hasAnySlots = globalSlots.length > 0;
+  const hasAnySlots = false;
 
   // Format selected date nicely
   const selDateObj = new Date(selectedDate + 'T00:00:00');
@@ -6199,177 +6199,191 @@ function renderBatchView() {
     timetableHtml += `</tbody></table></div>`;
 
   } else {
-    // ══ FALLBACK: no slots configured — show 30-min time grid, batches as rows ══
     const timeSlots = [];
     for (let h = 7; h <= 21; h++) {
       for (let m = 0; m < 60; m += 30) {
         timeSlots.push(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`);
       }
     }
+
     timetableHtml = `
-    <div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:10px;padding:12px 16px;margin-bottom:12px;font-size:13px;color:#c2440c;">
-      ⏱️ No slots configured for any batch. Using 30-min time grid. Add slots via Master Settings → Slot Templates.
-    </div>
-    <div style="overflow-x:auto;border:1.5px solid var(--border);border-radius:12px;background:var(--surface)">
-    <table style="width:100%;border-collapse:collapse;font-size:12px">
-      <thead style="position:sticky;top:0;background:var(--surface2);z-index:10">
-        <tr>
-          <th style="padding:10px;min-width:130px;text-align:left;border-right:1.5px solid var(--border);font-weight:700">Batch</th>
-          ${timeSlots.map(t=>`<th style="padding:8px;min-width:60px;border-right:1px solid var(--border);text-align:center;font-size:10px;font-weight:700">${t}</th>`).join('')}
-        </tr>
-      </thead>
-      <tbody>`;
+    <div class="timeline-wrap">
+      <table class="timeline-table">
+        <thead>
+          <tr>
+            <th class="bv-batch-col" style="text-align:left">BATCH</th>
+            ${timeSlots.slice(0,-1).map(t=>`<th style="min-width:52px">${t}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>`;
 
     batchPool.forEach(batch => {
-      const batchSchedules = daySchedules.filter(s => {
-        const bids = (s.batchIds||[s.batchId]).filter(Boolean);
-        return bids.includes(batch.id);
-      });
+      const batchSchedules = daySchedules
+        .filter(s => {
+          const bids = (s.batchIds || [s.batchId]).filter(Boolean);
+          return bids.includes(batch.id);
+        })
+        .sort((a, b) => String(a.startTime || '').localeCompare(String(b.startTime || '')));
+      const campus = DB.campuses.find(c => c.id === batch.campusId);
+
       timetableHtml += `<tr>
-        <td style="padding:8px 10px;min-width:130px;border-right:1.5px solid var(--border);border-bottom:1px solid var(--border);background:var(--surface2);position:sticky;left:0;z-index:5;">
-          <div style="font-weight:700;font-size:13px;color:var(--text)">${batch.name}</div>
-          <div style="font-size:11px;color:var(--text2)">${batch.course||''}</div>
+        <td class="bv-batch-col">
+          <span style="color:var(--text);font-weight:800">${batch.name}</span>
+          ${batch.course ? `<span class="bv-batch-sub">${batch.course}${campus?' &middot; '+campus.name:''}</span>` : (campus ? `<span class="bv-batch-sub">${campus.name}</span>` : '')}
         </td>`;
-      timeSlots.forEach(ts => {
+
+      const consumed = new Set();
+      timeSlots.slice(0,-1).forEach((slotStart, index) => {
+        if (consumed.has(index)) return;
+
         const match = batchSchedules.find(s => {
-          const st = s.startTime||'07:00', et = s.endTime||'18:00';
-          return st<=ts && ts<et;
+          const st = s.startTime || '07:00';
+          const et = s.endTime || '07:30';
+          return st <= slotStart && slotStart < et;
         });
-        let cell = '';
+
         if (match) {
-          const subj = DB.subjects.find(s=>s.id===match.subjectId);
-          const fac = DB.faculty.find(f=>f.id===match.facultyId);
-          const bg = match.mode==='online'?'#faf5ff':'#fff7ed';
-          const col = match.mode==='online'?'#7c3aed':'#c2440c';
-          cell = `<div style="background:${bg};border:1.5px solid ${col};border-radius:5px;padding:3px;cursor:pointer;color:${col};font-size:10px;font-weight:700;min-height:40px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center" onclick="editSchedule('${match.id}')"><div>${subj?.name||'—'}</div><div style="font-weight:500;color:var(--text2)">${fac?.code||fac?.name||''}</div></div>`;
+          const startIdx = timeSlots.findIndex(t => t === (match.startTime || slotStart));
+          if (startIdx !== -1 && startIdx !== index) return;
+
+          const endTime = match.endTime || slotStart;
+          let span = 1;
+          for (let j = index + 1; j < timeSlots.length; j++) {
+            if (timeSlots[j] < endTime) {
+              span++;
+              consumed.add(j);
+            } else {
+              break;
+            }
+          }
+
+          const faculty = DB.faculty.find(f => f.id === match.facultyId);
+          const subject = DB.subjects.find(s => s.id === match.subjectId);
+          const color = match.mode === 'online' ? '#7c3aed' : '#f97316';
+          const status = match.status || 'Scheduled';
+          const modeLabel = match.mode === 'online' ? 'Online' : 'Offline';
+
+          timetableHtml += `<td colspan="${span}" style="position:relative">
+            <div class="tl-block" style="background:${color}" onclick="editSchedule('${match.id}')" title="${subject?.name || 'Class'} | ${faculty?.name||''} | ${match.startTime||slotStart}–${match.endTime||slotStart}">
+              <span class="tl-block-mode">${modeLabel}</span>${subject?.name||'Class'} ${faculty?.code||faculty?.name||''}
+            </div>
+          </td>`;
         } else {
-          cell = `<div style="cursor:pointer;opacity:.35;font-size:16px;text-align:center;padding:2px" onclick="bvQuickAdd('${selectedDate}','${batch.id}')">+</div>`;
+          const nextSlot = timeSlots[index + 1] || slotStart;
+          timetableHtml += `<td>
+            <div class="tl-free" onclick="bvSlotQuickAdd('${selectedDate}','${batch.id}','${slotStart}','${nextSlot}')" title="Free: ${slotStart}">+</div>
+          </td>`;
         }
-        timetableHtml += `<td style="padding:3px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-align:center;vertical-align:middle;">${cell}</td>`;
       });
+
       timetableHtml += `</tr>`;
     });
+
     timetableHtml += `</tbody></table></div>`;
   }
 
   return `
   <style>
-  .bv-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:18px;background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:14px 16px}
-  .bv-select{background:var(--surface2);border:1.5px solid var(--border);border-radius:9px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:13px;font-weight:600;min-width:160px;cursor:pointer}
-  .bv-select:focus{outline:none;border-color:var(--accent)}
-  .bv-date-input{background:var(--surface2);border:1.5px solid var(--border);border-radius:9px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer}
+  .bv-filterbar{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+  .bv-filter-btn{padding:6px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;border:1.5px solid var(--border);background:var(--surface);color:var(--text2);transition:all .18s;font-family:inherit}
+  .bv-filter-btn.active{background:var(--accent);color:#fff;border-color:transparent}
+  .bv-filter-btn:hover:not(.active){border-color:var(--accent);color:var(--accent)}
+  .bv-date-input{border:1.5px solid var(--border);border-radius:8px;padding:6px 12px;font-size:13px;font-family:inherit;background:var(--surface);color:var(--text);font-weight:600}
   .bv-date-input:focus{outline:none;border-color:var(--accent)}
-  .bv-day-nav{display:flex;align-items:center;gap:6px;margin-left:auto}
-  .bv-nav-btn{padding:7px 14px;border-radius:8px;background:var(--surface2);border:1.5px solid var(--border);color:var(--text2);font-size:13px;font-weight:700;cursor:pointer;transition:all .15s}
-  .bv-nav-btn:hover,.bv-nav-btn.today-active{background:var(--surface);border-color:var(--accent);color:var(--accent)}
-  .bv-summary{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap}
-  .bv-stat{flex:1;min-width:100px;background:var(--surface);border:1.5px solid var(--border);border-radius:10px;padding:12px 14px;text-align:center}
-  .bv-stat-val{font-size:22px;font-weight:900;font-family:'Nunito',sans-serif}
-  .bv-stat-lbl{font-size:11px;color:var(--text2);font-weight:600;margin-top:2px}
-
-  /* ── Multi-select batch dropdown ── */
+  .bv-nav-btn{padding:6px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;border:1.5px solid var(--border);background:var(--surface);color:var(--text2);transition:all .18s;font-family:inherit}
+  .bv-nav-btn:hover{border-color:var(--accent);color:var(--accent)}
+  .bv-nav-btn.today-active{background:var(--accent);color:#fff;border-color:transparent}
+  .bv-stats-strip{display:flex;align-items:center;gap:14px;margin-bottom:12px;font-size:12px;flex-wrap:wrap}
+  .bv-s{display:flex;align-items:center;gap:5px;font-weight:700;color:var(--text2)}
+  .bv-s-dot{width:9px;height:9px;border-radius:3px;flex-shrink:0}
+  .bv-s-val{font-weight:900;font-size:14px;font-family:"Nunito",sans-serif}
+  .bv-sep{color:var(--border);font-size:16px}
+  .timeline-wrap{overflow-x:auto;border-radius:14px;border:1.5px solid var(--border);background:var(--surface)}
+  .timeline-table{border-collapse:collapse;min-width:900px;width:100%}
+  .timeline-table th{background:var(--surface2);font-size:11px;font-weight:700;color:var(--text2);padding:8px 10px;border-bottom:1.5px solid var(--border);white-space:nowrap;text-align:center}
+  .timeline-table td{border-bottom:1px solid var(--border);padding:0;height:36px;position:relative}
+  .timeline-table .bv-batch-col{font-size:12px;font-weight:800;padding:8px 14px;color:var(--text);background:var(--surface2);border-right:1.5px solid var(--border);white-space:nowrap;min-width:80px;vertical-align:middle}
+  .bv-batch-sub{font-size:10px;color:var(--text3);font-weight:600;display:block;margin-top:1px}
+  .tl-block{position:absolute;inset:2px 1px;border-radius:6px;display:flex;align-items:center;padding:0 6px;font-size:10px;font-weight:700;color:#fff;overflow:hidden;white-space:nowrap;cursor:pointer;transition:opacity .15s;gap:5px}
+  .tl-block:hover{opacity:.85}
+  .tl-block-mode{font-size:9px;padding:1px 5px;border-radius:4px;background:rgba(0,0,0,.18);flex-shrink:0}
+  .tl-free{background:rgba(22,163,74,.08);border:1px dashed rgba(22,163,74,.3);border-radius:6px;position:absolute;inset:3px 1px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:11px;color:#16a34a;font-weight:700;transition:background .15s}
+  .tl-free:hover{background:rgba(22,163,74,.18)}
   .bv-multiselect-wrap{position:relative}
-  .bv-multiselect-btn{display:flex;align-items:center;gap:8px;background:var(--surface2);border:1.5px solid var(--border);border-radius:9px;padding:8px 12px;color:var(--text);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;min-width:200px;transition:border .2s;user-select:none}
-  .bv-multiselect-btn:hover,.bv-multiselect-btn.open{border-color:var(--accent);background:#fff}
-  .bv-multiselect-btn .bv-chevron{margin-left:auto;font-size:11px;color:var(--text3);transition:transform .2s}
-  .bv-multiselect-btn.open .bv-chevron{transform:rotate(180deg)}
+  .bv-multiselect-btn{display:flex;align-items:center;gap:6px;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;border:1.5px solid var(--border);background:var(--surface);color:var(--text2);transition:all .18s;font-family:inherit;user-select:none}
+  .bv-multiselect-btn:hover,.bv-multiselect-btn.open{border-color:var(--accent);color:var(--accent)}
   .bv-multiselect-badge{background:var(--accent);color:#fff;border-radius:20px;font-size:10px;font-weight:800;padding:1px 7px;line-height:1.6}
-  .bv-dropdown{display:none;position:absolute;top:calc(100% + 6px);left:0;min-width:260px;max-width:340px;background:var(--surface);border:1.5px solid var(--border);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.13);z-index:200;overflow:hidden}
+  .bv-chevron{font-size:10px;color:var(--text3);transition:transform .2s;margin-left:2px}
+  .bv-multiselect-btn.open .bv-chevron{transform:rotate(180deg)}
+  .bv-dropdown{display:none;position:absolute;top:calc(100% + 5px);left:0;min-width:260px;max-width:320px;background:var(--surface);border:1.5px solid var(--border);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.12);z-index:200;overflow:hidden}
   .bv-dropdown.open{display:block}
-  .bv-dd-search{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border)}
+  .bv-dd-search{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--border)}
   .bv-dd-search input{flex:1;border:none;outline:none;font-family:inherit;font-size:13px;background:transparent;color:var(--text)}
-  .bv-dd-actions{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--border);background:#fafbfc}
-  .bv-dd-action{font-size:11px;font-weight:700;color:var(--accent);cursor:pointer;padding:3px 8px;border-radius:6px;border:1px solid #fdba74;background:#fff7ed}
+  .bv-dd-actions{display:flex;gap:6px;padding:7px 12px;border-bottom:1px solid var(--border);background:#fafbfc}
+  .bv-dd-action{font-size:11px;font-weight:700;color:var(--accent);cursor:pointer;padding:3px 8px;border-radius:6px;border:1px solid #fdba74;background:#fff7ed;transition:all .15s}
   .bv-dd-action:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
-  .bv-dd-list{max-height:240px;overflow-y:auto}
-  .bv-dd-item{display:flex;align-items:center;gap:10px;padding:9px 14px;cursor:pointer;transition:background .12s;border-bottom:1px solid var(--border)}
+  .bv-dd-list{max-height:220px;overflow-y:auto}
+  .bv-dd-item{display:flex;align-items:center;gap:9px;padding:8px 12px;cursor:pointer;transition:background .12s;border-bottom:1px solid var(--border);font-size:12px}
   .bv-dd-item:last-child{border-bottom:none}
-  .bv-dd-item:hover{background:#fff7ed}
-  .bv-dd-item.checked{background:#fff7ed}
-  .bv-dd-checkbox{width:16px;height:16px;border:2px solid var(--border);border-radius:4px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s}
+  .bv-dd-item:hover,.bv-dd-item.checked{background:#fff7ed}
+  .bv-dd-checkbox{width:15px;height:15px;border:2px solid var(--border);border-radius:3px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s}
   .bv-dd-item.checked .bv-dd-checkbox{background:var(--accent);border-color:var(--accent)}
-  .bv-dd-item.checked .bv-dd-checkbox::after{content:'✓';color:#fff;font-size:10px;font-weight:900;line-height:1}
-  .bv-dd-name{font-size:13px;font-weight:600;color:var(--text)}
-  .bv-dd-meta{font-size:11px;color:var(--text3);margin-top:1px}
+  .bv-dd-item.checked .bv-dd-checkbox::after{content:"\u2713";color:#fff;font-size:9px;font-weight:900;line-height:1}
+  .bv-dd-name{font-weight:700;color:var(--text)}
+  .bv-dd-meta{font-size:10px;color:var(--text3);margin-top:1px}
   </style>
-  <div class="bv-toolbar">
-    <div>
-      <label style="font-size:11px;font-weight:700;color:var(--text2);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em">Campus</label>
-      <select class="bv-select" id="bv-campus" onchange="bvChangeCampus(this.value)">
-        <option value="">All Campuses</option>
-        ${campusOpts}
-      </select>
-    </div>
-    <div>
-      <label style="font-size:11px;font-weight:700;color:var(--text2);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em">Batches</label>
-      <div class="bv-multiselect-wrap" id="bv-ms-wrap">
-        <div class="bv-multiselect-btn ${batchSelectedCount>0?'open':''}" id="bv-ms-btn" onclick="bvToggleBatchDropdown(event)">
-          <span id="bv-ms-label">${batchBtnLabel}</span>
-          ${batchSelectedCount>0?`<span class="bv-multiselect-badge">${batchSelectedCount}</span>`:''}
-          <span class="bv-chevron">▼</span>
-        </div>
-        <div class="bv-dropdown" id="bv-ms-dropdown">
-          <div class="bv-dd-search">
-            <span style="color:var(--text3);font-size:14px">🔍</span>
-            <input type="text" placeholder="Search batches…" oninput="bvFilterBatchList(this.value)" id="bv-dd-search-input">
-          </div>
-          <div class="bv-dd-actions">
-            <span class="bv-dd-action" onclick="bvSelectAllBatches()">Select All</span>
-            <span class="bv-dd-action" onclick="bvClearBatches()">Clear</span>
-          </div>
-          <div class="bv-dd-list" id="bv-dd-list">
-            ${campusBatchPool.map(b => {
-              const campus = DB.campuses.find(c=>c.id===b.campusId);
-              const chk = selectedBatchIds.has(b.id);
-              return `<div class="bv-dd-item ${chk?'checked':''}" data-batch-id="${b.id}" data-batch-name="${b.name.toLowerCase()}" onclick="bvToggleBatch('${b.id}',this)">
-                <div class="bv-dd-checkbox"></div>
-                <div>
-                  <div class="bv-dd-name">${b.name}</div>
-                  <div class="bv-dd-meta">${b.course||''}${campus?' · '+campus.name:''}</div>
-                </div>
-              </div>`;
-            }).join('')}
-          </div>
+
+  <div class="bv-filterbar">
+    <select class="bv-filter-btn" id="bv-campus" onchange="bvChangeCampus(this.value)" style="appearance:auto;cursor:pointer">
+      <option value="">All Campuses</option>
+      ${campusOpts}
+    </select>
+    <div class="bv-multiselect-wrap" id="bv-ms-wrap">
+      <div class="bv-multiselect-btn ${batchSelectedCount>0?'open':''}" id="bv-ms-btn" onclick="bvToggleBatchDropdown(event)">
+        <span id="bv-ms-label">${batchBtnLabel}</span>
+        ${batchSelectedCount>0?`<span class="bv-multiselect-badge">${batchSelectedCount}</span>`:''}
+        <span class="bv-chevron">&#9660;</span>
+      </div>
+      <div class="bv-dropdown" id="bv-ms-dropdown">
+        <div class="bv-dd-search"><span style="color:var(--text3)">&#128269;</span><input type="text" placeholder="Search batches..." oninput="bvFilterBatchList(this.value)" id="bv-dd-search-input"></div>
+        <div class="bv-dd-actions"><span class="bv-dd-action" onclick="bvSelectAllBatches()">All</span><span class="bv-dd-action" onclick="bvClearBatches()">Clear</span></div>
+        <div class="bv-dd-list" id="bv-dd-list">
+          ${campusBatchPool.map(b => { const campus=DB.campuses.find(c=>c.id===b.campusId); const chk=selectedBatchIds.has(b.id); return `<div class="bv-dd-item ${chk?'checked':''}" data-batch-id="${b.id}" data-batch-name="${b.name.toLowerCase()}" onclick="bvToggleBatch('${b.id}',this)"><div class="bv-dd-checkbox"></div><div><div class="bv-dd-name">${b.name}</div><div class="bv-dd-meta">${b.course||''}${campus?' &middot; '+campus.name:''}</div></div></div>`; }).join('')}
         </div>
       </div>
     </div>
-    <div>
-      <label style="font-size:11px;font-weight:700;color:var(--text2);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em">Subject</label>
-      <select class="bv-select" id="bv-subject" onchange="bvChangeSubject(this.value)">
-        <option value="">All Subjects</option>
-        ${subjOpts}
-      </select>
-    </div>
-    <div>
-      <label style="font-size:11px;font-weight:700;color:var(--text2);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em">Date</label>
-      <input type="date" class="bv-date-input" id="bv-date-picker" value="${selectedDate}" onchange="bvChangeDate(this.value)">
-    </div>
-    <div class="bv-day-nav">
-      <button class="bv-nav-btn" onclick="bvDayNav('${prevStr}')">◀ Prev</button>
+    <select class="bv-filter-btn" id="bv-subject" onchange="bvChangeSubject(this.value)" style="appearance:auto;cursor:pointer">
+      <option value="">All Subjects</option>
+      ${subjOpts}
+    </select>
+    <input type="date" class="bv-date-input" id="bv-date-picker" value="${selectedDate}" onchange="bvChangeDate(this.value)">
+    <div style="display:flex;gap:6px;margin-left:auto">
+      <button class="bv-nav-btn" onclick="bvDayNav('${prevStr}')">&#9664; Prev</button>
       <button class="bv-nav-btn ${isToday?'today-active':''}" onclick="bvGoToday()">Today</button>
-      <button class="bv-nav-btn" onclick="bvDayNav('${nextStr}')">Next ▶</button>
+      <button class="bv-nav-btn" onclick="bvDayNav('${nextStr}')">Next &#9654;</button>
     </div>
   </div>
 
-  <div style="margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-    <div style="font-size:15px;font-weight:800;color:var(--text);font-family:'Nunito',sans-serif">${dateFmt}</div>
-    ${isToday?'<span style="background:#fff7ed;color:var(--accent);border:1px solid #fdba74;border-radius:20px;font-size:11px;font-weight:700;padding:2px 10px">Today</span>':''}
-    <span style="font-size:12px;color:var(--text2);margin-left:auto">${batchPool.length} batch${batchPool.length!==1?'es':''} shown</span>
-  </div>
-
-  <div class="bv-summary">
-    <div class="bv-stat"><div class="bv-stat-val">${totalSched}</div><div class="bv-stat-lbl">Total Sessions</div></div>
-    <div class="bv-stat"><div class="bv-stat-val" style="color:var(--accent3)">${completedSched}</div><div class="bv-stat-lbl">Completed</div></div>
-    <div class="bv-stat"><div class="bv-stat-val" style="color:#3b82f6">${pendingSched}</div><div class="bv-stat-lbl">Scheduled</div></div>
-    <div class="bv-stat"><div class="bv-stat-val" style="color:var(--danger)">${cancelledSched}</div><div class="bv-stat-lbl">Cancelled</div></div>
+  <div class="bv-stats-strip">
+    <span style="font-weight:800;color:var(--text);font-size:13px">${selDateObj.toLocaleDateString('default',{weekday:'short',day:'numeric',month:'short',year:'numeric'})}${isToday?' <span style="background:var(--accent);color:#fff;border-radius:20px;font-size:10px;font-weight:800;padding:2px 8px;margin-left:4px;vertical-align:middle">TODAY</span>':''}</span>
+    <span class="bv-sep">|</span>
+    <span class="bv-s"><span class="bv-s-dot" style="background:#94a3b8"></span><span class="bv-s-val">${totalSched}</span>&nbsp;Total</span>
+    <span class="bv-s"><span class="bv-s-dot" style="background:#16a34a"></span><span class="bv-s-val" style="color:#16a34a">${completedSched}</span>&nbsp;Done</span>
+    <span class="bv-s"><span class="bv-s-dot" style="background:#3b82f6"></span><span class="bv-s-val" style="color:#3b82f6">${pendingSched}</span>&nbsp;Scheduled</span>
+    <span class="bv-s"><span class="bv-s-dot" style="background:#ef4444"></span><span class="bv-s-val" style="color:#ef4444">${cancelledSched}</span>&nbsp;Cancelled</span>
+    <span class="bv-sep">|</span>
+    <span style="color:var(--text2);font-weight:600">${batchPool.length} batch${batchPool.length!==1?'es':''}</span>
+    <span style="margin-left:auto">
+      <span style="display:inline-block;width:10px;height:10px;background:#f97316;border-radius:3px;margin-right:4px"></span>Offline
+      <span style="display:inline-block;width:10px;height:10px;background:#7c3aed;border-radius:3px;margin:0 4px 0 10px"></span>Online
+      <span style="display:inline-block;width:10px;height:10px;background:rgba(22,163,74,.1);border:1px dashed #86efac;border-radius:3px;margin:0 4px 0 10px"></span>Free
+    </span>
   </div>
 
   ${timetableHtml}
 
-  <div style="font-size:12px;color:var(--text3);padding:12px 2px">
-    💡 Click a session to edit · Hover an empty slot and click <strong>+</strong> to schedule · Use date picker or Prev/Next to navigate days
-  </div>
-  `;
+  <div style="margin-top:10px;font-size:12px;color:var(--text3)">&#128161; Click a session to edit &bull; Click a free <strong>+</strong> slot to schedule</div>
+  `
 }
 
 function bvChangeCampus(cid) {
