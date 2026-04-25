@@ -176,12 +176,22 @@ tr:hover td{background:#fff7ed}
 .cal-month-nav{display:flex;align-items:center;gap:16px;margin-bottom:16px}
 .cal-month-nav h3{font-size:17px;font-weight:800;font-family:'Nunito',sans-serif;color:var(--text)}
 
-/* ── Availability calendar ── */
-.avail-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-top:12px}
-.avail-day{padding:7px 4px;text-align:center;border-radius:8px;font-size:12px;cursor:pointer;border:1.5px solid var(--border);transition:all .15s;background:var(--surface2);font-weight:600}
-.avail-day.available{background:#dcfce7;color:#16a34a;border-color:#86efac}
-.avail-day.unavailable{background:#fef2f2;color:#ef4444;border-color:#fca5a5}
-.avail-day.empty{background:transparent;border-color:transparent;cursor:default}
+/* ── Availability slot table ── */
+.avail-slot-table{width:100%;border-collapse:separate;border-spacing:0;border-radius:12px;overflow:hidden;border:1.5px solid var(--border)}
+.avail-slot-table th{background:var(--surface2);padding:10px 14px;font-size:12px;font-weight:700;color:var(--text2);text-align:center;border-bottom:1.5px solid var(--border)}
+.avail-slot-table td{padding:10px 14px;font-size:13px;border-bottom:1px solid var(--border);text-align:center;vertical-align:middle}
+.avail-slot-table td:first-child{text-align:left;font-weight:600;color:var(--text1);white-space:nowrap;background:var(--surface2);min-width:130px}
+.avail-slot-table tr:last-child td{border-bottom:none}
+.avail-slot-table input[type=radio]{width:17px;height:17px;accent-color:var(--accent);cursor:pointer}
+.avail-slot-table tr:hover td{background:rgba(249,115,22,.04)}
+.avail-slot-table tr:hover td:first-child{background:var(--surface2)}
+.avail-week-nav{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+.avail-week-nav button{background:var(--surface2);border:1.5px solid var(--border);border-radius:8px;padding:7px 16px;font-size:13px;font-weight:700;cursor:pointer;color:var(--text1);transition:all .15s}
+.avail-week-nav button:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.avail-week-label{font-size:14px;font-weight:700;color:var(--text1);flex:1;text-align:center}
+.avail-locked td{background:#fafafa!important;color:var(--text3)!important}
+.avail-locked input[type=radio]{opacity:.35;pointer-events:none}
+.avail-past-note{font-size:11px;color:var(--danger);font-style:italic;margin-left:8px}
 
 /* ── Priority dots ── */
 .priority-high::before{content:'●';color:var(--danger);margin-right:5px}
@@ -1235,6 +1245,10 @@ function buildSidebar() {
     {id:'dashboard',icon:iconDash,label:'Dashboard'},
     {id:'schedule',icon:iconCal,label:'Class Schedule'},
     {id:'studio',icon:iconStudio,label:'Studio Booking'},
+    ...(!isAdmin ? [
+      {section:'My Info'},
+      {id:'availability',icon:iconAvail,label:'My Availability'},
+    ] : []),
     ...(isAdmin ? [
       {section:'Management'},
       {id:'faculty',icon:iconPeople,label:'Faculty'},
@@ -3733,72 +3747,248 @@ function printFacultySchedule(id){
   win.document.close();
 }
 
-function renderAvailability(el){
-  const selFac=DB.faculty[0]?.id||'';
-  el.innerHTML=`
+// ════════════════════════════════════════════════════
+//  AVAILABILITY — SLOT-BASED WEEKLY TABLE
+//  Slots: NA | Full Day | FN | AN | Rec | Online Only
+//  Faculty: can only edit their own, only 1 week ahead
+//  Admin/Coord: can edit any faculty, any week
+// ════════════════════════════════════════════════════
+const AVAIL_SLOTS = ['NA','Full Day','FN','AN','Rec','Online Only'];
+let _availWeekOffset = 0; // 0 = current week, 1 = next week, etc.
+
+function _availWeekStart(offset) {
+  const today = new Date();
+  const day = today.getDay(); // 0=Sun
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - day + 1 + offset * 7);
+  monday.setHours(0,0,0,0);
+  return monday;
+}
+
+function _availWeekDays(offset) {
+  const mon = _availWeekStart(offset);
+  return Array.from({length:7}, (_,i) => {
+    const d = new Date(mon);
+    d.setDate(mon.getDate() + i);
+    return d;
+  });
+}
+
+function _availDateKey(d) {
+  return d.toISOString().slice(0,10); // YYYY-MM-DD
+}
+
+function _availGetSlot(fid, dateKey) {
+  return DB.availability[fid]?.slots?.[dateKey] || 'Full Day';
+}
+
+function _availSetSlot(fid, dateKey, slot) {
+  if (!DB.availability[fid]) DB.availability[fid] = {};
+  if (!DB.availability[fid].slots) DB.availability[fid].slots = {};
+  DB.availability[fid].slots[dateKey] = slot;
+}
+
+function renderAvailability(el) {
+  const isFaculty = currentUser.role === 'faculty';
+  const isAdmin = ['admin','coordinator'].includes(currentUser.role);
+
+  // Faculty sees only their own; admin/coord sees faculty selector
+  let facOptions = '';
+  let defaultFac = '';
+  if (isFaculty) {
+    const myFac = DB.faculty.find(f => f.email === currentUser.email || f.name === currentUser.name);
+    defaultFac = myFac?.id || '';
+  } else {
+    defaultFac = DB.faculty[0]?.id || '';
+    facOptions = DB.faculty.map(f => `<option value="${f.id}">${f.name}</option>`).join('');
+  }
+
+  el.innerHTML = `
   <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px;align-items:center">
-    <div class="form-group" style="margin:0">
-      <select id="avail-fac" onchange="renderAvailCalendar()">
-        ${DB.faculty.map(f=>`<option value="${f.id}">${f.name}</option>`).join('')}
-      </select></div>
-    <div class="form-group" style="margin:0">
-      <input type="month" id="avail-month" value="2026-04" onchange="renderAvailCalendar()" />
-    </div>
+    ${!isFaculty ? `<div class="form-group" style="margin:0">
+      <label style="font-size:12px;font-weight:700;color:var(--text2);display:block;margin-bottom:4px">Faculty</label>
+      <select id="avail-fac" onchange="renderAvailTable()" style="min-width:200px">${facOptions}</select>
+    </div>` : `<input type="hidden" id="avail-fac" value="${defaultFac}" />`}
     <button class="btn btn-primary" onclick="saveAvailability()">💾 Save Availability</button>
   </div>
-  <div id="avail-cal-wrap"></div>`;
-  renderAvailCalendar();
+  <div id="avail-table-wrap"></div>`;
+
+  _availWeekOffset = 0; // Start from current week; faculty can navigate freely but can't edit past dates
+  renderAvailTable();
 }
-function renderAvailCalendar(){
-  const fid=document.getElementById('avail-fac')?.value||DB.faculty[0]?.id;
-  const ym=document.getElementById('avail-month')?.value||'2026-04';
-  const [y,m]=ym.split('-').map(Number);
-  const days=new Date(y,m,0).getDate();
-  const first=new Date(y,m-1,1).getDay();
-  const avail=DB.availability[fid]?.[ym]||{available:[],maxPerDay:2};
-  const fac=DB.faculty.find(f=>f.id===fid)||{name:'?',maxDays:20};
-  let html=`
+
+function renderAvailTable() {
+  const isFaculty = currentUser.role === 'faculty';
+  const isAdmin = ['admin','coordinator'].includes(currentUser.role);
+  const fid = document.getElementById('avail-fac')?.value;
+  const fac = DB.faculty.find(f => f.id === fid) || {name: currentUser.name || '?'};
+
+  const days = _availWeekDays(_availWeekOffset);
+  const today = new Date(); today.setHours(0,0,0,0);
+
+  // Faculty can view all weeks (past, present, future) but can only edit future weeks
+  const canGoPrev = true; // can always view previous weeks
+  const canGoNext = true; // always can go forward
+
+  const weekStart = days[0];
+  const weekEnd = days[6];
+  const fmt = d => d.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  const weekLabel = `${fmt(weekStart)} – ${fmt(weekEnd)}`;
+
+  const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+  // Build table rows: one row per day
+  let rows = '';
+  // Calculate lockout period: next 7 days from today (inclusive)
+  const lockoutDate = new Date(today);
+  lockoutDate.setDate(today.getDate() + 7);
+  
+  days.forEach((d, i) => {
+    const dateKey = _availDateKey(d);
+    const isPast = d < today;
+    const isToday = _availDateKey(d) === _availDateKey(today);
+    const currentSlot = _availGetSlot(fid, dateKey);
+
+    // Faculty cannot edit for 7 days from today (locked period)
+    const locked = isFaculty && d < lockoutDate;
+
+    const dayLabel = `<div style="font-weight:700">${dayNames[i]}</div>
+      <div style="font-size:11px;color:var(--text3)">${d.getDate()} ${d.toLocaleString('en',{month:'short'})}</div>
+      ${locked && isFaculty ? '<span class="avail-past-note">locked</span>' : ''}
+      ${isToday ? '<span style="font-size:10px;background:var(--accent);color:#fff;border-radius:20px;padding:1px 7px;margin-left:4px">Today</span>' : ''}`;
+
+    const cells = AVAIL_SLOTS.map(slot => {
+      const checked = currentSlot === slot ? 'checked' : '';
+      const inp = locked
+        ? `<input type="radio" disabled ${checked} style="opacity:.3" />`
+        : `<input type="radio" name="avail-${dateKey}" value="${slot}" ${checked}
+            onchange="availSetSlotUI('${fid}','${dateKey}',this.value)" />`;
+      return `<td>${inp}</td>`;
+    }).join('');
+
+    rows += `<tr class="${locked ? 'avail-locked' : ''}">
+      <td style="text-align:left;background:var(--surface2)">${dayLabel}</td>
+      ${cells}
+    </tr>`;
+  });
+
+  const html = `
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <div>
-        <div class="card-title">${fac.name} — ${ym}</div>
-        <div style="font-size:12px;color:var(--text2);margin-top:4px">Max ${fac.maxDays} days/month · Click dates to toggle availability</div>
-      </div>
-      <div style="text-align:right">
-        <div style="font-size:20px;font-weight:700;color:var(--accent3)">${avail.available.length}</div>
-        <div style="font-size:12px;color:var(--text2)">days available</div>
-      </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+      <div class="card-title" style="margin:0">${fac.name} — Availability</div>
+      ${isFaculty ? '<div style="font-size:12px;color:var(--text2)">You can view all weeks, but can only edit availability from 8 days onwards (next 7 days are locked).</div>' : ''}
     </div>
-    <div class="avail-grid">`;
-  ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(d=>{html+=`<div style="text-align:center;font-size:10px;font-weight:600;color:var(--text3);padding:4px">${d}</div>`});
-  for(let i=0;i<first;i++)html+=`<div class="avail-day empty"></div>`;
-  for(let d=1;d<=days;d++){
-    const ds=String(d).padStart(2,'0');
-    const isAvail=avail.available.includes(ds);
-    html+=`<div class="avail-day${isAvail?' available':''}" onclick="toggleAvailDay('${fid}','${ym}','${ds}')" title="${ym}-${ds}">${d}</div>`;
-  }
-  html+=`</div>
-    <div style="margin-top:16px;display:flex;gap:20px;font-size:12px">
-      <div><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:rgba(5,150,105,.4);margin-right:4px"></span>Available</div>
-      <div><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--surface2);margin-right:4px"></span>Unavailable</div>
+    <div class="avail-week-nav">
+      <button onclick="availNavWeek(-1)" ${!canGoPrev ? 'disabled style="opacity:.4;cursor:not-allowed"' : ''}>← Prev</button>
+      <div class="avail-week-label">📅 ${weekLabel}</div>
+      <button onclick="availNavWeek(1)" ${!canGoNext ? 'disabled style="opacity:.4;cursor:not-allowed"' : ''}>Next →</button>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="avail-slot-table">
+        <thead>
+          <tr>
+            <th style="text-align:left">Day</th>
+            ${AVAIL_SLOTS.map(s => `<th>${s}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="margin-top:16px;display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text2)">
+      <span><b>NA</b> = Not Available</span>
+      <span><b>FN</b> = Forenoon</span>
+      <span><b>AN</b> = Afternoon</span>
+      <span><b>Rec</b> = Recording</span>
+      <span><b>Full Day</b> = Fully Available</span>
+      <span><b>Online Only</b> = Online only</span>
     </div>
   </div>`;
-  document.getElementById('avail-cal-wrap').innerHTML=html;
+
+  document.getElementById('avail-table-wrap').innerHTML = html;
 }
-function toggleAvailDay(fid,ym,day){
-  if(!DB.availability[fid])DB.availability[fid]={};
-  if(!DB.availability[fid][ym])DB.availability[fid][ym]={available:[],maxPerDay:2};
-  const arr=DB.availability[fid][ym].available;
-  const idx=arr.indexOf(day);
-  if(idx>-1)arr.splice(idx,1); else arr.push(day);
-  renderAvailCalendar();
+
+function availNavWeek(dir) {
+  const newOffset = _availWeekOffset + dir;
+  _availWeekOffset = newOffset;
+  renderAvailTable();
 }
-async function saveAvailability(){
-  const fid=document.getElementById('avail-fac')?.value||DB.faculty[0]?.id;
-  const ym=document.getElementById('avail-month')?.value||'2026-04';
-  const data = DB.availability[fid] || {};
-  await fsSet('availability', fid, data);
-  toast('Availability saved to Firebase! ✅','success');
+
+function availSetSlotUI(fid, dateKey, slot) {
+  const isFaculty = currentUser.role === 'faculty';
+  const today = new Date(); today.setHours(0,0,0,0);
+  const lockoutDate = new Date(today);
+  lockoutDate.setDate(today.getDate() + 7);
+  const selectedDate = new Date(dateKey);
+  const isLocked = selectedDate < lockoutDate;
+  
+  // Faculty cannot edit for next 7 days
+  if (isFaculty && isLocked) {
+    toast('Cannot edit availability for the next 7 days', 'warning');
+    return;
+  }
+  
+  _availSetSlot(fid, dateKey, slot);
+}
+
+function toggleAvailDay(fid, ym, day) {
+  // Legacy stub — kept for compatibility
+}
+
+function renderAvailCalendar() {
+  // Legacy stub — kept for compatibility
+}
+
+async function saveAvailability() {
+  const isFaculty = currentUser.role === 'faculty';
+  const fid = document.getElementById('avail-fac')?.value;
+  if (!fid) return;
+  
+  let data = DB.availability[fid] || {};
+  
+  // Faculty: filter out dates within lockout period (next 7 days) before saving
+  if (isFaculty && data.slots) {
+    const today = new Date(); today.setHours(0,0,0,0);
+    const lockoutDate = new Date(today);
+    lockoutDate.setDate(today.getDate() + 7);
+    const filteredSlots = {};
+    
+    Object.entries(data.slots).forEach(([dateKey, slot]) => {
+      const selectedDate = new Date(dateKey);
+      if (selectedDate >= lockoutDate) {
+        filteredSlots[dateKey] = slot;
+      }
+    });
+    
+    data.slots = filteredSlots;
+  }
+  
+  // Preserve only id and slots; rebuild month availability from scratch
+  const preservedData = { 
+    id: data.id, 
+    slots: data.slots || {} 
+  };
+  
+  // Convert slots to old format for Add Schedule modal compatibility
+  // Build month-based availability structure from scratch
+  if (preservedData.slots) {
+    Object.entries(preservedData.slots).forEach(([dateKey, slot]) => {
+      // Only mark as available if slot is NOT 'NA'
+      if (slot !== 'NA') {
+        const ym = dateKey.substring(0, 7); // YYYY-MM
+        const day = dateKey.substring(8);   // DD
+        if (!preservedData[ym]) preservedData[ym] = { available: [] };
+        if (!preservedData[ym].available.includes(day)) {
+          preservedData[ym].available.push(day);
+        }
+      }
+    });
+  }
+  
+  // Update local DB before saving to ensure modal sees updated data immediately
+  DB.availability[fid] = preservedData;
+  
+  await fsSet('availability', fid, preservedData);
+  toast('Availability saved ✅', 'success');
 }
 
 // ════════════════════════════════════════════════════
@@ -4959,7 +5149,8 @@ Object.assign(window, {
   onCourseSubjectChange, onCourseSubjectChangeOnline,
   toggleMultiDate, toggleMultiDateDay, removeMultiDate,
   filterFaculty, openAddFaculty, editFaculty, saveFaculty, deleteFaculty, viewFacultyStats, printFacultySchedule, openFacultyDetail, closeFacultyDetail,
-  renderAvailability, renderAvailCalendar, toggleAvailDay, saveAvailability,
+  renderAvailability, renderAvailTable, availNavWeek, availSetSlotUI,
+  renderAvailCalendar, toggleAvailDay, saveAvailability,
   switchBatchTab, openAddBatch, editBatch, saveBatch, deleteBatch,
   openBatchSlotEditor, bseAddSlot, bseRemoveSlot, saveBatchSlots,
   openAddCampus, editCampus, saveCampus, deleteCampus,
@@ -6745,6 +6936,58 @@ Object.assign(window, {
   renderSlotTemplates, openAddSlotTemplate, editSlotTemplate, saveSlotTemplate, deleteSlotTemplate,
   addPendingSlot, removePendingSlot, updatePendingSlotDuration,
 });
+</script>
+
+<script>
+// ══════════════════════════════════════════════
+//  URL ROUTING PATCH
+//  Adds /pagename URLs without changing any logic
+// ══════════════════════════════════════════════
+(function() {
+  // Wait for app to be ready
+  function patchRouter() {
+    if (typeof navigateWithMobile !== 'function') {
+      setTimeout(patchRouter, 100);
+      return;
+    }
+
+    const VALID_PAGES = ['dashboard','schedule','tasks','faculty','availability',
+                         'batches','subjects','reports','settings','studio'];
+
+    // Store original navigate
+    const _orig = window.navigate;
+
+    // Override navigate to also update URL
+    window.navigate = function(page) {
+      _orig(page);
+      const path = '/' + page;
+      if (location.pathname !== path) {
+        history.pushState({ page }, '', path);
+      }
+    };
+
+    // Handle browser back/forward
+    window.addEventListener('popstate', function(e) {
+      const page = e.state?.page || location.pathname.replace('/', '') || 'schedule';
+      if (VALID_PAGES.includes(page)) {
+        _orig(page); // use original to avoid double pushState
+      }
+    });
+
+    // On first load, navigate to URL path if valid
+    const initPage = location.pathname.replace('/', '').replace(/\/+$/, '');
+    if (VALID_PAGES.includes(initPage) && typeof currentUser !== 'undefined' && currentUser) {
+      window.navigate(initPage);
+    }
+  }
+
+  // Start patching after scripts load
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', patchRouter);
+  } else {
+    patchRouter();
+  }
+})();
 </script>
   <script type="module" src="/src/main.jsx"></script>
 </body>
