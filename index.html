@@ -5177,6 +5177,31 @@ const avatarGradients=[
   'linear-gradient(135deg,#3b82f6,#6366f1)',
   'linear-gradient(135deg,#d97706,#f97316)',
 ];
+const subjectTimelineColors = ['#f97316','#16a34a','#8b5cf6','#3b82f6','#d97706'];
+function getSubjectTimelineColor(subjectId){
+  const subjectIdx = DB.subjects.findIndex(s=>s.id===subjectId);
+  return subjectTimelineColors[((subjectIdx >= 0 ? subjectIdx : 0) % subjectTimelineColors.length)];
+}
+function getBatchViewSubjectLegend(schedules){
+  const seen = new Set();
+  const subjectItems = [];
+  (schedules || []).forEach(schedule => {
+    if (!schedule?.subjectId || seen.has(schedule.subjectId)) return;
+    seen.add(schedule.subjectId);
+    const subject = DB.subjects.find(s => s.id === schedule.subjectId);
+    if (!subject) return;
+    subjectItems.push({
+      id: subject.id,
+      label: subject.name || 'Subject',
+      color: getSubjectTimelineColor(subject.id),
+    });
+  });
+  const visibleItems = subjectItems.slice(0, 5);
+  const extraCount = Math.max(0, subjectItems.length - visibleItems.length);
+  const swatches = visibleItems.map(item => `<span style="display:inline-flex;align-items:center;margin-right:12px"><span style="display:inline-block;width:10px;height:10px;background:${item.color};border-radius:3px;margin-right:4px"></span>${item.label}</span>`).join('');
+  const more = extraCount ? `<span style="color:var(--text3)">+${extraCount} more</span>` : '';
+  return `${swatches}${more}<span style="display:inline-flex;align-items:center;margin-left:${subjectItems.length ? '10px' : '0'}"><span style="display:inline-block;width:10px;height:10px;background:rgba(22,163,74,.1);border:1px dashed #86efac;border-radius:3px;margin-right:4px"></span>Free</span>`;
+}
 let _tooltipHideTimer=null;
 
 function showCalTooltip(e, sid){
@@ -6028,9 +6053,15 @@ function renderBatchView() {
     : DB.batches;
 
   // Final batch pool: further filtered by selected batches (if any selected)
-  const batchPool = selectedBatchIds.size > 0
-    ? campusBatchPool.filter(b => selectedBatchIds.has(b.id))
-    : campusBatchPool;
+    const batchPool = selectedBatchIds.size > 0
+      ? campusBatchPool.filter(b => selectedBatchIds.has(b.id))
+      : campusBatchPool;
+    const visibleSchedules = DB.schedules.filter(s => {
+      const scheduleBatchIds = (s.batchIds && s.batchIds.length ? s.batchIds : (s.batchId ? [s.batchId] : []));
+      return s.date === selectedDate
+        && (!subjectFilter || s.subjectId === subjectFilter)
+        && scheduleBatchIds.some(batchId => batchPool.some(batch => batch.id === batchId));
+    });
 
   const campusOpts = DB.campuses.map(c =>
     `<option value="${c.id}" ${c.id===selectedCampusId?'selected':''}>${c.name}</option>`
@@ -6259,7 +6290,7 @@ function renderBatchView() {
 
           const faculty = DB.faculty.find(f => f.id === match.facultyId);
           const subject = DB.subjects.find(s => s.id === match.subjectId);
-          const color = match.mode === 'online' ? '#7c3aed' : '#f97316';
+          const color = getSubjectTimelineColor(match.subjectId);
           const status = match.status || 'Scheduled';
           const modeLabel = match.mode === 'online' ? 'Online' : 'Offline';
 
@@ -6373,12 +6404,10 @@ function renderBatchView() {
     <span class="bv-s"><span class="bv-s-dot" style="background:#ef4444"></span><span class="bv-s-val" style="color:#ef4444">${cancelledSched}</span>&nbsp;Cancelled</span>
     <span class="bv-sep">|</span>
     <span style="color:var(--text2);font-weight:600">${batchPool.length} batch${batchPool.length!==1?'es':''}</span>
-    <span style="margin-left:auto">
-      <span style="display:inline-block;width:10px;height:10px;background:#f97316;border-radius:3px;margin-right:4px"></span>Offline
-      <span style="display:inline-block;width:10px;height:10px;background:#7c3aed;border-radius:3px;margin:0 4px 0 10px"></span>Online
-      <span style="display:inline-block;width:10px;height:10px;background:rgba(22,163,74,.1);border:1px dashed #86efac;border-radius:3px;margin:0 4px 0 10px"></span>Free
-    </span>
-  </div>
+      <span style="margin-left:auto;display:flex;align-items:center;flex-wrap:wrap;gap:4px 0;font-size:12px;color:var(--text)">
+        ${getBatchViewSubjectLegend(visibleSchedules)}
+      </span>
+    </div>
 
   ${timetableHtml}
 
